@@ -312,14 +312,16 @@ struct CameraSettingsSheet: View {
                 }
                 
                 Section(header: Text("Chống nhòe hình (Shutter Speed & ISO)")) {
-                    Toggle("Khóa màn trập nhanh thủ công", isOn: $camera.manualExposureEnabled)
-                        .onChange(of: camera.manualExposureEnabled) { enabled in
+                    Toggle("Khóa màn trập nhanh thủ công", isOn: Binding(
+                        get: { camera.manualExposureEnabled },
+                        set: { enabled in
                             if enabled {
                                 camera.setManualShutter(numerator: camera.shutterSpeedNumerator, iso: camera.currentISO)
                             } else {
                                 camera.resetToAutoExposure()
                             }
                         }
+                    ))
                     
                     if camera.manualExposureEnabled {
                         VStack(alignment: .leading, spacing: 6) {

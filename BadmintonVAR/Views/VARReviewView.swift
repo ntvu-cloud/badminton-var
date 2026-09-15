@@ -2,21 +2,138 @@ import SwiftUI
 import AVKit
 import Photos
 
+// MARK: - ViewModel quản lý trình phát Video VAR (Class để quản lý closure & observer an toàn 100%)
+public class VARReviewViewModel: ObservableObject {
+    public let videoURL: URL
+    public let fps: Double = 240.0
+    
+    @Published public var player: AVPlayer?
+    @Published public var isPlaying: Bool = false
+    @Published public var duration: Double = 0.0
+    @Published public var currentTime: Double = 0.0
+    @Published public var playbackRate: Float = 0.1
+    @Published public var currentFrameIndex: Int = 0
+    @Published public var totalFrames: Int = 0
+    @Published public var saveSuccessAlert: Bool = false
+    
+    private var timeObserverToken: Any?
+    
+    public init(videoURL: URL) {
+        self.videoURL = videoURL
+        setupPlayer()
+    }
+    
+    deinit {
+        cleanUp()
+    }
+    
+    private func setupPlayer() {
+        let playerItem = AVPlayerItem(url: videoURL)
+        let avPlayer = AVPlayer(playerItem: playerItem)
+        avPlayer.actionAtItemEnd = .pause
+        self.player = avPlayer
+        
+        let asset = AVURLAsset(url: videoURL)
+        Task { [weak self] in
+            guard let self = self else { return }
+            if let assetDuration = try? await asset.load(.duration) {
+                let seconds = CMTimeGetSeconds(assetDuration)
+                DispatchQueue.main.async {
+                    self.duration = seconds
+                    self.totalFrames = Int(seconds * self.fps)
+                }
+            }
+        }
+        
+        let interval = CMTime(value: 1, timescale: CMTimeScale(fps))
+        timeObserverToken = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            guard let self = self else { return }
+            let sec = CMTimeGetSeconds(time)
+            self.currentTime = sec
+            self.currentFrameIndex = Int(sec * self.fps)
+        }
+    }
+    
+    public func cleanUp() {
+        if let token = timeObserverToken {
+            player?.removeTimeObserver(token)
+            timeObserverToken = nil
+        }
+        player?.pause()
+        player = nil
+    }
+    
+    public func togglePlayPause() {
+        guard let p = player else { return }
+        if isPlaying {
+            p.pause()
+            isPlaying = false
+        } else {
+            p.rate = playbackRate
+            isPlaying = true
+        }
+    }
+    
+    public func setPlaybackRate(_ rate: Float) {
+        playbackRate = rate
+        if isPlaying {
+            player?.rate = rate
+        }
+    }
+    
+    public func seekTo(time: Double) {
+        player?.pause()
+        isPlaying = false
+        let targetTime = CMTime(seconds: time, preferredTimescale: CMTimeScale(fps))
+        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+    
+    public func stepFrame(by count: Int) {
+        player?.pause()
+        isPlaying = false
+        let frameDuration = 1.0 / fps
+        let newTime = max(0, min(duration, currentTime + Double(count) * frameDuration))
+        seekTo(time: newTime)
+    }
+    
+    public func captureSnapshot() {
+        guard let p = player, let currentItem = p.currentItem else { return }
+        let asset = currentItem.asset
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        
+        let time = CMTime(seconds: currentTime, preferredTimescale: CMTimeScale(fps))
+        
+        generator.generateCGImageAsynchronously(for: time) { [weak self] cgImage, actualTime, error in
+            guard let self = self else { return }
+            if let image = cgImage {
+                let uiImage = UIImage(cgImage: image)
+                UIImageWriteToSavedPhotosAlbum(uiImage, nil, nil, nil)
+                DispatchQueue.main.async {
+                    self.saveSuccessAlert = true
+                }
+            }
+        }
+    }
+    
+    public func formatTime(_ seconds: Double) -> String {
+        let mins = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        let ms = Int((seconds.truncatingRemainder(dividingBy: 1)) * 1000)
+        return String(format: "%02d:%02d.%03d", mins, secs, ms)
+    }
+}
+
+// MARK: - View Phân Tích VAR
 public struct VARReviewView: View {
     public let videoURL: URL
     public let courtPosition: CourtPosition
     public var onDismiss: () -> Void
     public var onSaveRecord: (ChallengeRecord) -> Void
     
-    // MARK: - Video Player State
-    @State private var player: AVPlayer?
-    @State private var isPlaying: Bool = false
-    @State private var duration: Double = 0.0
-    @State private var currentTime: Double = 0.0
-    @State private var playbackRate: Float = 0.1 // Mặc định quay chậm 0.1x
-    @State private var currentFrameIndex: Int = 0
-    @State private var totalFrames: Int = 0
-    private let fps: Double = 240.0 // Chuẩn quay 240 FPS
+    @StateObject private var viewModel: VARReviewViewModel
     
     // MARK: - Kính lúp & Căn vạch
     @State private var loupeZoom: CGFloat = 4.0
@@ -27,12 +144,7 @@ public struct VARReviewView: View {
     @State private var lineOffset: CGSize = .zero
     @State private var lineWidth: CGFloat = 30.0
     @State private var isCornerMode: Bool = true
-    
-    // MARK: - Phán quyết & Lưu trữ
     @State private var currentVerdict: VARVerdict = .inconclusive
-    @State private var saveSuccessAlert: Bool = false
-    @State private var isSavingImage: Bool = false
-    @State private var timeObserverToken: Any?
     
     public init(
         videoURL: URL,
@@ -44,6 +156,7 @@ public struct VARReviewView: View {
         self.courtPosition = courtPosition
         self.onDismiss = onDismiss
         self.onSaveRecord = onSaveRecord
+        self._viewModel = StateObject(wrappedValue: VARReviewViewModel(videoURL: videoURL))
     }
     
     public var body: some View {
@@ -51,20 +164,19 @@ public struct VARReviewView: View {
             Color.black.ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // MARK: - Header Bar
+                // Header Bar
                 headerBar
                 
-                // MARK: - Video Player Viewport with Overlays
+                // Video Player Viewport with Overlays
                 ZStack {
-                    if let player = player {
+                    if let player = viewModel.player {
                         CustomVideoPlayerView(player: player)
                             .ignoresSafeArea()
                     } else {
-                        ProgressView("Đang tải video siêu chậm 240 FPS...")
+                        ProgressView("Đang nạp video 240 FPS...")
                             .foregroundColor(.white)
                     }
                     
-                    // Thước đo vạch ảo
                     if showCourtLine {
                         CourtLineOverlay(
                             isCalibrating: .constant(false),
@@ -75,14 +187,12 @@ public struct VARReviewView: View {
                         )
                     }
                     
-                    // Kính lúp phóng đại kỹ thuật số
                     MagnifierLoupeView(
                         zoomLevel: $loupeZoom,
                         loupePosition: $loupePosition,
                         highContrast: $highContrast
                     )
                     
-                    // Con dấu phán quyết (Verdict Badge Watermark)
                     if currentVerdict != .inconclusive {
                         VStack {
                             HStack {
@@ -108,24 +218,17 @@ public struct VARReviewView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
                 
-                // MARK: - Điều khiển tua từng khung hình (Frame Scrubber)
+                // Điều khiển tua từng khung hình
                 controlsPanel
             }
         }
-        .onAppear {
-            setupPlayer()
-        }
-        .onDisappear {
-            cleanUpPlayer()
-        }
-        .alert("Đã lưu bằng chứng VAR!", isPresented: $saveSuccessAlert) {
+        .alert("Đã lưu bằng chứng VAR!", isPresented: $viewModel.saveSuccessAlert) {
             Button("OK", role: .cancel) { }
         } message: {
             Text("Ảnh chụp khoảnh khắc chạm vạch kèm phán quyết \(currentVerdict.rawValue) đã được lưu vào Thư viện ảnh iPhone.")
         }
     }
     
-    // MARK: - Header
     private var headerBar: some View {
         HStack {
             Button(action: onDismiss) {
@@ -144,7 +247,7 @@ public struct VARReviewView: View {
             Spacer()
             
             VStack(spacing: 2) {
-                Text("PHÂN TÍCH VAR - SO KIM MÉT")
+                Text("PHÂN TÍCH VAR - SOI MÉT")
                     .font(.system(size: 13, weight: .black))
                     .foregroundColor(.yellow)
                 Text(courtPosition.rawValue)
@@ -154,7 +257,7 @@ public struct VARReviewView: View {
             
             Spacer()
             
-            Button(action: captureAndSaveSnapshot) {
+            Button(action: { viewModel.captureSnapshot() }) {
                 HStack(spacing: 4) {
                     Image(systemName: "camera.badge.ellipsis")
                     Text("Lưu Bằng Chứng")
@@ -172,42 +275,37 @@ public struct VARReviewView: View {
         .background(Color.black.opacity(0.85))
     }
     
-    // MARK: - Controls Panel
     private var controlsPanel: some View {
         VStack(spacing: 10) {
-            // Thanh Scrubber hiển thị thời gian & Frame chính xác
             VStack(spacing: 4) {
                 HStack {
-                    Text(formatTime(currentTime))
+                    Text(viewModel.formatTime(viewModel.currentTime))
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
                         .foregroundColor(.green)
                     
                     Spacer()
                     
-                    Text("Khung hình #\(currentFrameIndex) / \(totalFrames)")
+                    Text("Khung hình #\(viewModel.currentFrameIndex) / \(viewModel.totalFrames)")
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(.yellow)
                     
                     Spacer()
                     
-                    Text(formatTime(duration))
+                    Text(viewModel.formatTime(viewModel.duration))
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
                         .foregroundColor(.gray)
                 }
                 
                 Slider(value: Binding(
-                    get: { currentTime },
-                    set: { newTime in
-                        seekTo(time: newTime)
-                    }
-                ), in: 0...max(duration, 0.01))
+                    get: { viewModel.currentTime },
+                    set: { newTime in viewModel.seekTo(time: newTime) }
+                ), in: 0...max(viewModel.duration, 0.01))
                 .accentColor(.green)
             }
             .padding(.horizontal, 16)
             
-            // Các nút nhích từng khung hình (1/240s)
             HStack(spacing: 12) {
-                Button(action: { stepFrame(by: -5) }) {
+                Button(action: { viewModel.stepFrame(by: -5) }) {
                     Text("-5 Frame")
                         .font(.system(size: 11, weight: .bold))
                         .frame(width: 65, height: 36)
@@ -216,7 +314,7 @@ public struct VARReviewView: View {
                         .cornerRadius(6)
                 }
                 
-                Button(action: { stepFrame(by: -1) }) {
+                Button(action: { viewModel.stepFrame(by: -1) }) {
                     HStack(spacing: 2) {
                         Image(systemName: "chevron.left")
                         Text("1 Frame")
@@ -228,8 +326,8 @@ public struct VARReviewView: View {
                     .cornerRadius(6)
                 }
                 
-                Button(action: togglePlayPause) {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                Button(action: { viewModel.togglePlayPause() }) {
+                    Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 18))
                         .frame(width: 48, height: 36)
                         .background(Color.white)
@@ -237,7 +335,7 @@ public struct VARReviewView: View {
                         .cornerRadius(6)
                 }
                 
-                Button(action: { stepFrame(by: 1) }) {
+                Button(action: { viewModel.stepFrame(by: 1) }) {
                     HStack(spacing: 2) {
                         Text("1 Frame")
                         Image(systemName: "chevron.right")
@@ -249,7 +347,7 @@ public struct VARReviewView: View {
                     .cornerRadius(6)
                 }
                 
-                Button(action: { stepFrame(by: 5) }) {
+                Button(action: { viewModel.stepFrame(by: 5) }) {
                     Text("+5 Frame")
                         .font(.system(size: 11, weight: .bold))
                         .frame(width: 65, height: 36)
@@ -259,21 +357,19 @@ public struct VARReviewView: View {
                 }
             }
             
-            // Tốc độ xem chậm & Phóng to
             HStack(spacing: 12) {
-                // Tốc độ tua chậm
                 HStack(spacing: 4) {
                     Text("Tốc độ:")
                         .font(.system(size: 11))
                         .foregroundColor(.gray)
                     ForEach([0.05, 0.1, 0.25, 0.5, 1.0], id: \.self) { rate in
-                        Button(action: { setPlaybackRate(Float(rate)) }) {
+                        Button(action: { viewModel.setPlaybackRate(Float(rate)) }) {
                             Text(rate == 1.0 ? "1x" : "\(String(format: "%.2fx", rate))")
-                                .font(.system(size: 10, weight: playbackRate == Float(rate) ? .black : .regular))
+                                .font(.system(size: 10, weight: viewModel.playbackRate == Float(rate) ? .black : .regular))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 3)
-                                .background(playbackRate == Float(rate) ? Color.yellow : Color.gray.opacity(0.2))
-                                .foregroundColor(playbackRate == Float(rate) ? .black : .white)
+                                .background(viewModel.playbackRate == Float(rate) ? Color.yellow : Color.gray.opacity(0.2))
+                                .foregroundColor(viewModel.playbackRate == Float(rate) ? .black : .white)
                                 .cornerRadius(4)
                         }
                     }
@@ -281,7 +377,6 @@ public struct VARReviewView: View {
                 
                 Spacer()
                 
-                // Thu phóng Kính lúp
                 HStack(spacing: 4) {
                     Text("Lúp:")
                         .font(.system(size: 11))
@@ -301,7 +396,6 @@ public struct VARReviewView: View {
             }
             .padding(.horizontal, 16)
             
-            // MARK: - Phán quyết cuối cùng (Verdict Buttons)
             HStack(spacing: 16) {
                 Button(action: { setVerdict(.inCourt) }) {
                     HStack {
@@ -344,113 +438,15 @@ public struct VARReviewView: View {
         .background(Color.black.opacity(0.95))
     }
     
-    // MARK: - Setup AVPlayer
-    private func setupPlayer() {
-        let playerItem = AVPlayerItem(url: videoURL)
-        let avPlayer = AVPlayer(playerItem: playerItem)
-        avPlayer.actionAtItemEnd = .pause
-        self.player = avPlayer
-        
-        let asset = AVURLAsset(url: videoURL)
-        Task {
-            if let duration = try? await asset.load(.duration) {
-                let seconds = CMTimeGetSeconds(duration)
-                await MainActor.run {
-                    self.duration = seconds
-                    self.totalFrames = Int(seconds * fps)
-                }
-            }
-        }
-        
-        // Quan sát thời gian thực
-        let interval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        timeObserverToken = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-            let sec = CMTimeGetSeconds(time)
-            currentTime = sec
-            currentFrameIndex = Int(sec * fps)
-        }
-    }
-    
-    private func cleanUpPlayer() {
-        if let token = timeObserverToken {
-            player?.removeTimeObserver(token)
-            timeObserverToken = nil
-        }
-        player?.pause()
-        player = nil
-    }
-    
-    // MARK: - Video Action Methods
-    private func togglePlayPause() {
-        guard let p = player else { return }
-        if isPlaying {
-            p.pause()
-            isPlaying = false
-        } else {
-            p.rate = playbackRate
-            isPlaying = true
-        }
-    }
-    
-    private func setPlaybackRate(_ rate: Float) {
-        playbackRate = rate
-        if isPlaying {
-            player?.rate = rate
-        }
-    }
-    
-    private func seekTo(time: Double) {
-        player?.pause()
-        isPlaying = false
-        let targetTime = CMTime(seconds: time, preferredTimescale: CMTimeScale(fps))
-        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
-    }
-    
-    private func stepFrame(by count: Int) {
-        player?.pause()
-        isPlaying = false
-        let frameDuration = 1.0 / fps
-        let newTime = max(0, min(duration, currentTime + Double(count) * frameDuration))
-        seekTo(time: newTime)
-    }
-    
     private func setVerdict(_ verdict: VARVerdict) {
         currentVerdict = verdict
         let record = ChallengeRecord(
             position: courtPosition,
             verdict: verdict,
             videoPath: videoURL.path,
-            notes: "Xác định tại khung hình #\(currentFrameIndex) (\(formatTime(currentTime)))"
+            notes: "Xác định tại khung hình #\(viewModel.currentFrameIndex) (\(viewModel.formatTime(viewModel.currentTime)))"
         )
         onSaveRecord(record)
-    }
-    
-    private func captureAndSaveSnapshot() {
-        guard let p = player, let currentItem = p.currentItem else { return }
-        let asset = currentItem.asset
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
-        
-        let time = CMTime(seconds: currentTime, preferredTimescale: CMTimeScale(fps))
-        
-        generator.generateCGImageAsynchronously(for: time) { cgImage, actualTime, error in
-            if let image = cgImage {
-                let uiImage = UIImage(cgImage: image)
-                UIImageWriteToSavedPhotosAlbum(uiImage, nil, nil, nil)
-                DispatchQueue.main.async {
-                    saveSuccessAlert = true
-                }
-            }
-        }
-    }
-    
-    private func formatTime(_ seconds: Double) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        let ms = Int((seconds.truncatingRemainder(dividingBy: 1)) * 1000)
-        return String(format: "%02d:%02d.%03d", mins, secs, ms)
     }
 }
 
