@@ -13,33 +13,17 @@ targets:
       - path: BadmintonVAR
         excludes:
           - "Resources/Info.plist"
-    info:
-      plist:
-        CFBundleDisplayName: "Badminton VAR"
-        CFBundleShortVersionString: "1.0.0"
-        CFBundleVersion: "1"
-        UILaunchScreen: {}
-        NSCameraUsageDescription: "BadmintonVAR cần quyền truy cập camera để quay video tốc độ cao 240fps giám sát vạch sân cầu lông."
-        NSMicrophoneUsageDescription: "BadmintonVAR cần microphone để ghi nhận âm thanh tiếng vợt đập và tiếng cầu tiếp xúc sàn."
-        NSPhotoLibraryUsageDescription: "BadmintonVAR cần quyền truy cập thư viện ảnh để lưu ảnh phân tích góc vạch cầu lông."
-        NSPhotoLibraryAddUsageDescription: "BadmintonVAR cần quyền lưu ảnh và video phân tích tình huống VAR vào thư viện."
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
-          - UIInterfaceOrientationPortrait
-    dependencies:
-      - sdk: AVFoundation.framework
-      - sdk: CoreMedia.framework
-      - sdk: CoreVideo.framework
-      - sdk: Photos.framework
-      - sdk: UIKit.framework
     settings:
       base:
         PRODUCT_NAME: "BadmintonVAR"
         PRODUCT_BUNDLE_IDENTIFIER: com.badmintonvar.app
+        INFOPLIST_FILE: BadmintonVAR/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_VERSION: "5.9"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
         ENABLE_BITCODE: NO
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: ""
