@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     name: Build IPA with XcodeGen
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout Code
@@ -18,7 +18,7 @@ jobs:
 
       - name: Select Xcode Version
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode.app
+          sudo xcode-select -s /Applications/Xcode_16.app || sudo xcode-select -s /Applications/Xcode.app || true
           xcodebuild -version
 
       - name: Install XcodeGen

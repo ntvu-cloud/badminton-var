@@ -3,7 +3,8 @@ options:
   bundleIdPrefix: com.badmintonvar
   deploymentTarget:
     iOS: "16.0"
-  xcodeVersion: "16.0"
+  xcodeVersion: "15.4"
+  projectVersion: 56
 targets:
   BadmintonVAR:
     type: application
