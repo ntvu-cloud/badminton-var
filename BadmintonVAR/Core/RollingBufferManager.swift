@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import CoreMedia
+import CoreVideo
 import Combine
 
 public class RollingBufferManager: NSObject, ObservableObject {

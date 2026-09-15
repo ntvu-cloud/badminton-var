@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 public struct CameraPreviewView: View {
     @ObservedObject var camera = CameraManager.shared

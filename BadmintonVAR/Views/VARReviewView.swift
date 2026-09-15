@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import Photos
+import UIKit
 
 // MARK: - ViewModel quản lý trình phát Video VAR (Class để quản lý closure & observer an toàn 100%)
 public class VARReviewViewModel: ObservableObject {

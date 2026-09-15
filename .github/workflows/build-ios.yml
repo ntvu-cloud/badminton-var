@@ -29,6 +29,7 @@ jobs:
 
       - name: Build App (Release Unsigned)
         run: |
+          set +e
           xcodebuild build \
             -project BadmintonVAR.xcodeproj \
             -scheme BadmintonVAR \
@@ -38,7 +39,16 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_STYLE="Manual" > build.log 2>&1 || (cat build.log | grep -A 5 -B 2 "error:" ; echo "--- LAST 60 LINES ---" ; tail -n 60 build.log ; exit 1)
+            CODE_SIGN_STYLE="Manual" > build.log 2>&1
+          STATUS=$?
+          if [ $STATUS -ne 0 ]; then
+            echo "### Build Failed with code $STATUS" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 60 build.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat build.log
+            exit $STATUS
+          fi
 
       - name: Package Payload into IPA
         run: |

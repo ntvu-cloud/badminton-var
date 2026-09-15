@@ -1,5 +1,7 @@
 import Foundation
 import AVFoundation
+import CoreVideo
+import CoreMedia
 import SwiftUI
 import Combine
 
