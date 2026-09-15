@@ -17,7 +17,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Select Xcode Version
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -36,7 +38,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_STYLE="Manual"
+            CODE_SIGN_STYLE="Manual" > build.log 2>&1 || (cat build.log | grep -A 5 -B 2 "error:" ; echo "--- LAST 60 LINES ---" ; tail -n 60 build.log ; exit 1)
 
       - name: Package Payload into IPA
         run: |
