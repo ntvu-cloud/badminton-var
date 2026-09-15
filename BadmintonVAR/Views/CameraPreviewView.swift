@@ -9,13 +9,10 @@ public struct CameraPreviewView: View {
     @State private var selectedPosition: CourtPosition = .backLineRight
     @State private var showSettings: Bool = false
     @State private var showHistory: Bool = false
-    @State private var isCalibratingLine: Bool = false
     
-    // Căn vạch trực tiếp trên Live Camera
-    @State private var lineAngle: Double = 0.0
-    @State private var lineOffset: CGSize = .zero
-    @State private var lineWidth: CGFloat = 30.0
-    @State private var isCornerMode: Bool = true
+    // MARK: - Căn vạch phối cảnh 3 điểm & Khóa góc
+    @State private var showLineOverlay: Bool = true
+    @State private var calibration: PerspectiveCalibrationData = .default
     
     // Khi Challenge được kích hoạt
     @State private var reviewVideoURL: URL?
@@ -40,14 +37,12 @@ public struct CameraPreviewView: View {
                     camera.focusAndExpose(at: location)
                 }
             
-            // Vạch ảo căn chỉnh trên sân thời gian thực
-            if isCalibratingLine {
+            // Vạch ảo căn chỉnh 3 điểm trên sân thời gian thực
+            if showLineOverlay {
                 CourtLineOverlay(
-                    isCalibrating: $isCalibratingLine,
-                    lineAngle: $lineAngle,
-                    lineOffset: $lineOffset,
-                    lineWidth: $lineWidth,
-                    isCornerMode: $isCornerMode
+                    calibration: $calibration,
+                    positionKey: selectedPosition.rawValue,
+                    isInteractive: !calibration.isLocked
                 )
             }
             
@@ -65,30 +60,36 @@ public struct CameraPreviewView: View {
                 // Top Header Bar
                 topHeaderBar
                 
+                // Thanh công cụ căn vạch (Khi đang ở chế độ căn chỉnh chưa khóa)
+                if showLineOverlay && !calibration.isLocked {
+                    calibrationToolbar
+                }
+                
                 Spacer()
                 
                 // Bottom Control Center
                 bottomControlBar
             }
             
-            // Loading Overlay khi đang trích xuất video Challenge
+            // Loading Overlay khi đang trích xuất 30s video Challenge
             if buffer.isExporting {
                 ZStack {
-                    Color.black.opacity(0.7).ignoresSafeArea()
-                    VStack(spacing: 14) {
+                    Color.black.opacity(0.75).ignoresSafeArea()
+                    VStack(spacing: 16) {
                         ProgressView()
                             .progressViewStyle(CircularProgressViewStyle(tint: .yellow))
-                            .scaleEffect(1.6)
-                        Text("ĐANG XUẤT ĐỆM 240 FPS...")
-                            .font(.system(size: 15, weight: .bold))
+                            .scaleEffect(1.8)
+                        Text("ĐANG TRÍCH XUẤT 30 GIÂY VAR...")
+                            .font(.system(size: 16, weight: .bold))
                             .foregroundColor(.white)
-                        Text("Trích xuất khoảnh khắc 6-8 giây gần nhất")
+                        Text("Ghép nối trọn vẹn toàn bộ pha cầu 240 FPS")
                             .font(.system(size: 12))
                             .foregroundColor(.gray)
                     }
-                    .padding(24)
-                    .background(Color.gray.opacity(0.3))
-                    .cornerRadius(16)
+                    .padding(28)
+                    .background(Color.black.opacity(0.8))
+                    .cornerRadius(20)
+                    .shadow(radius: 20)
                 }
             }
         }
@@ -116,103 +117,168 @@ public struct CameraPreviewView: View {
             camera.rollingBuffer = buffer
             camera.configureSession(targetFPS: 240)
             buffer.startBuffering()
+            loadSavedCalibration(for: selectedPosition)
+        }
+        .onChange(of: selectedPosition) { newPos in
+            loadSavedCalibration(for: newPos)
         }
     }
     
-    // MARK: - Top Header
+    // MARK: - Top Header (Thiết kế rộng rãi, chống tràn chữ)
     private var topHeaderBar: some View {
-        HStack(spacing: 10) {
-            // Huy hiệu FPS
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(camera.isHighSpeedActive ? Color.green : Color.orange)
-                    .frame(width: 10, height: 10)
-                Text("\(Int(camera.currentFPS)) FPS")
-                    .font(.system(size: 13, weight: .black, design: .monospaced))
-                    .foregroundColor(camera.isHighSpeedActive ? .green : .orange)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.black.opacity(0.75))
-            .cornerRadius(20)
-            
-            // Vị trí quan sát trên sân
-            Menu {
-                ForEach(CourtPosition.allCases, id: \.self) { pos in
-                    Button(pos.rawValue) {
-                        selectedPosition = pos
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "mappin.and.ellipse")
-                        .foregroundColor(.yellow)
-                    Text(selectedPosition.rawValue)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10))
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                // Huy hiệu FPS & Bộ đệm 30s
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(camera.isHighSpeedActive ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text("\(Int(camera.currentFPS)) FPS")
+                        .font(.system(size: 12, weight: .black, design: .monospaced))
+                        .foregroundColor(camera.isHighSpeedActive ? .green : .orange)
+                    Text("| 30s")
+                        .font(.system(size: 11, weight: .bold))
                         .foregroundColor(.gray)
                 }
                 .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.black.opacity(0.75))
-                .cornerRadius(20)
+                .padding(.vertical, 7)
+                .background(Color.black.opacity(0.8))
+                .cornerRadius(18)
+                .fixedSize(horizontal: true, vertical: false)
+                
+                // Vị trí quan sát trên sân
+                Menu {
+                    ForEach(CourtPosition.allCases, id: \.self) { pos in
+                        Button(pos.rawValue) {
+                            selectedPosition = pos
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin.and.ellipse")
+                            .foregroundColor(.yellow)
+                        Text(selectedPosition.rawValue)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9))
+                            .foregroundColor(.gray)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.black.opacity(0.8))
+                    .cornerRadius(18)
+                }
+                
+                // Nút Khóa / Mở Khóa Vạch Sân
+                Button(action: toggleCalibrationLock) {
+                    HStack(spacing: 4) {
+                        Image(systemName: calibration.isLocked ? "lock.fill" : "lock.open.fill")
+                            .foregroundColor(calibration.isLocked ? .green : .yellow)
+                        Text(calibration.isLocked ? "ĐÃ KHÓA GÓC" : "ĐANG CĂN VẠCH")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.white)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(calibration.isLocked ? Color.black.opacity(0.8) : Color.orange.opacity(0.85))
+                    .cornerRadius(18)
+                }
+                
+                // Bật/tắt ẩn hiện vạch
+                Button(action: { showLineOverlay.toggle() }) {
+                    Image(systemName: showLineOverlay ? "eye.fill" : "eye.slash.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(showLineOverlay ? .white : .gray)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.8))
+                        .clipShape(Circle())
+                }
+                
+                // Bật/tắt đèn chiếu rọi sân
+                Button(action: { camera.toggleTorch() }) {
+                    Image(systemName: camera.isTorchOn ? "flashlight.on.fill" : "flashlight.off.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(camera.isTorchOn ? .yellow : .white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.8))
+                        .clipShape(Circle())
+                }
+                
+                // Cài đặt thông số màn trập
+                Button(action: { showSettings.toggle() }) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.8))
+                        .clipShape(Circle())
+                }
+                
+                // Lịch sử pha bóng
+                Button(action: { showHistory.toggle() }) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.black.opacity(0.8))
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+        }
+    }
+    
+    // MARK: - Thanh công cụ khi đang căn vạch
+    private var calibrationToolbar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Kéo 3 chấm tròn trùng vào góc sân thực tế")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.yellow)
+                HStack(spacing: 8) {
+                    Text("Độ dày vạch:")
+                        .font(.system(size: 10))
+                        .foregroundColor(.gray)
+                    Slider(value: $calibration.lineWidth, in: 14...50, step: 2)
+                        .frame(width: 110)
+                        .accentColor(.yellow)
+                }
             }
             
             Spacer()
             
-            // Bật/tắt thước đo vạch
-            Button(action: { isCalibratingLine.toggle() }) {
-                Image(systemName: isCalibratingLine ? "ruler.fill" : "ruler")
-                    .font(.system(size: 14))
-                    .foregroundColor(isCalibratingLine ? .yellow : .white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.75))
-                    .clipShape(Circle())
-            }
-            
-            // Bật/tắt đèn chiếu rọi sân
-            Button(action: { camera.toggleTorch() }) {
-                Image(systemName: camera.isTorchOn ? "flashlight.on.fill" : "flashlight.off.fill")
-                    .font(.system(size: 14))
-                    .foregroundColor(camera.isTorchOn ? .yellow : .white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.75))
-                    .clipShape(Circle())
-            }
-            
-            // Cài đặt thông số màn trập
-            Button(action: { showSettings.toggle() }) {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.75))
-                    .clipShape(Circle())
-            }
-            
-            // Lịch sử pha bóng
-            Button(action: { showHistory.toggle() }) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white)
-                    .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.75))
-                    .clipShape(Circle())
+            Button(action: lockCalibration) {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.seal.fill")
+                    Text("KHÓA GÓC")
+                        .font(.system(size: 12, weight: .black))
+                }
+                .foregroundColor(.black)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.green)
+                .cornerRadius(10)
+                .shadow(color: .green.opacity(0.5), radius: 6)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.black.opacity(0.85))
+        .cornerRadius(12)
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
     }
     
     // MARK: - Bottom Control Bar & Nút CHALLENGE to nhất
     private var bottomControlBar: some View {
-        VStack(spacing: 12) {
-            // Nút KÍCH HOẠT CHALLENGE
+        VStack(spacing: 8) {
             Button(action: triggerVARChallenge) {
                 ZStack {
-                    // Hiệu ứng vòng tròn tỏa sáng
                     Circle()
                         .stroke(Color.red.opacity(0.4), lineWidth: 8)
                         .frame(width: 96, height: 96)
@@ -240,12 +306,40 @@ public struct CameraPreviewView: View {
             }
             .disabled(buffer.isExporting)
             
-            Text("Nhấn nút khi cầu vừa rơi để xem lại ngay 6 giây vừa qua")
+            Text("Chạm Challenge để xem lại trọn vẹn 30 giây pha cầu vừa qua")
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.white.opacity(0.7))
+                .foregroundColor(.white.opacity(0.75))
                 .shadow(radius: 2)
         }
-        .padding(.bottom, 24)
+        .padding(.bottom, 20)
+    }
+    
+    // MARK: - Quản lý Căn Vạch & Khóa
+    private func toggleCalibrationLock() {
+        calibration.isLocked.toggle()
+        saveCalibration()
+    }
+    
+    private func lockCalibration() {
+        calibration.isLocked = true
+        saveCalibration()
+    }
+    
+    private func saveCalibration() {
+        let key = "calibration_\(selectedPosition.rawValue)"
+        if let encoded = try? JSONEncoder().encode(calibration) {
+            UserDefaults.standard.set(encoded, forKey: key)
+        }
+    }
+    
+    private func loadSavedCalibration(for pos: CourtPosition) {
+        let key = "calibration_\(pos.rawValue)"
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode(PerspectiveCalibrationData.self, from: data) {
+            self.calibration = decoded
+        } else {
+            self.calibration = .default
+        }
     }
     
     private func triggerVARChallenge() {

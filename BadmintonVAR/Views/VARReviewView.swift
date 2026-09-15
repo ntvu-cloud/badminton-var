@@ -136,15 +136,12 @@ public struct VARReviewView: View {
     
     @StateObject private var viewModel: VARReviewViewModel
     
-    // MARK: - Kính lúp & Căn vạch
+    // MARK: - Kính lúp & Vạch sân đã khóa
     @State private var loupeZoom: CGFloat = 4.0
     @State private var loupePosition: CGPoint = CGPoint(x: 200, y: 200)
     @State private var highContrast: Bool = false
     @State private var showCourtLine: Bool = true
-    @State private var lineAngle: Double = 0.0
-    @State private var lineOffset: CGSize = .zero
-    @State private var lineWidth: CGFloat = 30.0
-    @State private var isCornerMode: Bool = true
+    @State private var calibration: PerspectiveCalibrationData = .default
     @State private var currentVerdict: VARVerdict = .inconclusive
     
     public init(
@@ -174,26 +171,27 @@ public struct VARReviewView: View {
                         CustomVideoPlayerView(player: player)
                             .ignoresSafeArea()
                     } else {
-                        ProgressView("Đang nạp video 240 FPS...")
+                        ProgressView("Đang nạp video 240 FPS (30s)...")
                             .foregroundColor(.white)
                     }
                     
+                    // Vạch sân đã khóa theo phối cảnh
                     if showCourtLine {
                         CourtLineOverlay(
-                            isCalibrating: .constant(false),
-                            lineAngle: $lineAngle,
-                            lineOffset: $lineOffset,
-                            lineWidth: $lineWidth,
-                            isCornerMode: $isCornerMode
+                            calibration: $calibration,
+                            positionKey: courtPosition.rawValue,
+                            isInteractive: false // Khóa cố định trong lúc xem VAR
                         )
                     }
                     
+                    // Kính lúp phóng đại
                     MagnifierLoupeView(
                         zoomLevel: $loupeZoom,
                         loupePosition: $loupePosition,
                         highContrast: $highContrast
                     )
                     
+                    // Tem phán quyết
                     if currentVerdict != .inconclusive {
                         VStack {
                             HStack {
@@ -223,10 +221,22 @@ public struct VARReviewView: View {
                 controlsPanel
             }
         }
+        .onAppear {
+            loadCalibrationForPosition()
+        }
         .alert("Đã lưu bằng chứng VAR!", isPresented: $viewModel.saveSuccessAlert) {
             Button("OK", role: .cancel) { }
         } message: {
             Text("Ảnh chụp khoảnh khắc chạm vạch kèm phán quyết \(currentVerdict.rawValue) đã được lưu vào Thư viện ảnh iPhone.")
+        }
+    }
+    
+    private func loadCalibrationForPosition() {
+        let key = "calibration_\(courtPosition.rawValue)"
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode(PerspectiveCalibrationData.self, from: data) {
+            self.calibration = decoded
+            self.calibration.isLocked = true // Luôn khóa cố định khi xem lại
         }
     }
     

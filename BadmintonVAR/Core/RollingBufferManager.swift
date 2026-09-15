@@ -6,7 +6,7 @@ import Combine
 
 public class RollingBufferManager: NSObject, ObservableObject {
     @Published public var isRecording = false
-    @Published public var bufferDuration: Double = 6.0 // Giữ lại 6 giây gần nhất
+    @Published public var bufferDuration: Double = 30.0 // Giữ lại 30 giây gần nhất
     @Published public var isExporting = false
     
     private var assetWriter: AVAssetWriter?
@@ -17,7 +17,8 @@ public class RollingBufferManager: NSObject, ObservableObject {
     private var segmentURLs: [URL] = []
     private var segmentStartTime: CMTime = .zero
     private var lastSampleTime: CMTime = .zero
-    private let segmentTargetDuration: Double = 4.0 // Mỗi đoạn con 4 giây
+    private let segmentTargetDuration: Double = 5.0 // Mỗi đoạn con 5 giây
+    private let maxRetainedSegments: Int = 7 // 7 đoạn x 5s = 35s bộ đệm (luôn đảm bảo có trọn vẹn 30s)
     
     private var isFinalizingChallenge = false
     private var challengeCompletion: ((URL?) -> Void)?
@@ -67,7 +68,7 @@ public class RollingBufferManager: NSObject, ObservableObject {
                 self.assetWriter?.startSession(atSourceTime: pts)
             }
             
-            // Kiểm tra thời lượng đoạn hiện tại, nếu vượt quá segmentTargetDuration thì xoay vòng sang đoạn mới
+            // Kiểm tra thời lượng đoạn hiện tại, nếu vượt quá 5s thì xoay vòng sang đoạn mới
             let elapsed = CMTimeGetSeconds(CMTimeSubtract(pts, self.segmentStartTime))
             if elapsed >= self.segmentTargetDuration {
                 self.rotateToNextSegment(at: pts)
@@ -81,7 +82,7 @@ public class RollingBufferManager: NSObject, ObservableObject {
         }
     }
     
-    // MARK: - Kích hoạt CHALLENGE: Xuất 6-8 giây gần nhất thành video xem lại
+    // MARK: - Kích hoạt CHALLENGE: Xuất toàn bộ 30 giây gần nhất thành video xem lại
     public func triggerChallenge(completion: @escaping (URL?) -> Void) {
         writerQueue.async { [weak self] in
             guard let self = self else {
@@ -93,7 +94,7 @@ public class RollingBufferManager: NSObject, ObservableObject {
             
             // Hoàn tất đoạn hiện tại
             self.finishCurrentWriter {
-                // Ghép 2 đoạn gần nhất lại để có trọn vẹn 6-8 giây khoảnh khắc rơi cầu
+                // Ghép các đoạn video gần nhất (tối đa 30-35s) lại để có trọn vẹn cả pha cầu
                 self.stitchRecentSegments { finalURL in
                     self.isFinalizingChallenge = false
                     DispatchQueue.main.async {
@@ -120,7 +121,7 @@ public class RollingBufferManager: NSObject, ObservableObject {
                 AVVideoWidthKey: 1920,
                 AVVideoHeightKey: 1080,
                 AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: 30_000_000, // 30 Mbps cho độ nét cao ở 240fps
+                    AVVideoAverageBitRateKey: 28_000_000, // 28 Mbps cho độ nét cao ở 240fps
                     AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
                 ]
             ]
@@ -139,8 +140,9 @@ public class RollingBufferManager: NSObject, ObservableObject {
             self.segmentURLs.append(fileURL)
             self.segmentIndex += 1
             
-            // Chỉ giữ tối đa 3 segments trong bộ đệm (xóa bớt các segment cũ hơn để tiết kiệm bộ nhớ)
-            if self.segmentURLs.count > 3 {
+            // Chỉ giữ tối đa 7 segments (~35 giây) trong bộ đệm tạm
+            // Tự động xóa file cũ nhất để không bao giờ vượt quá ~100MB bộ nhớ tạm
+            while self.segmentURLs.count > self.maxRetainedSegments {
                 let oldURL = self.segmentURLs.removeFirst()
                 try? FileManager.default.removeItem(at: oldURL)
             }
@@ -172,7 +174,7 @@ public class RollingBufferManager: NSObject, ObservableObject {
         self.videoInput = nil
     }
     
-    // MARK: - Ghép nối các đoạn video vừa ghi nhận
+    // MARK: - Ghép nối các đoạn video trong 30 giây vừa qua
     private func stitchRecentSegments(completion: @escaping (URL?) -> Void) {
         let validURLs = self.segmentURLs.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !validURLs.isEmpty else {
@@ -180,14 +182,14 @@ public class RollingBufferManager: NSObject, ObservableObject {
             return
         }
         
-        // Nếu chỉ có 1 đoạn
+        // Nếu chỉ có 1 đoạn ngắn
         if validURLs.count == 1 {
             completion(validURLs.first)
             return
         }
         
-        // Lấy 2 đoạn gần nhất
-        let recentSegments = Array(validURLs.suffix(2))
+        // Lấy tối đa 6 đoạn gần nhất (6 x 5s = 30s)
+        let recentSegments = Array(validURLs.suffix(6))
         
         let composition = AVMutableComposition()
         guard let compositionTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
@@ -205,12 +207,12 @@ public class RollingBufferManager: NSObject, ObservableObject {
                     try compositionTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: currentTime)
                     currentTime = CMTimeAdd(currentTime, duration)
                 } catch {
-                    print("Lỗi chèn track ghép video: \(error)")
+                    print("Lỗi chèn track ghép video 30s: \(error)")
                 }
             }
         }
         
-        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("var_challenge_\(Int(Date().timeIntervalSince1970)).mp4")
+        let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent("var_challenge_30s_\(Int(Date().timeIntervalSince1970)).mp4")
         try? FileManager.default.removeItem(at: outputURL)
         
         guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
