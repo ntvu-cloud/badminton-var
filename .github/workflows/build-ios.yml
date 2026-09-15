@@ -1,0 +1,51 @@
+name: Build iOS BadmintonVAR (IPA)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build IPA with XcodeGen
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode Version
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build Archive (Unsigned for Sideloading)
+        run: |
+          xcodebuild clean archive \
+            -project BadmintonVAR.xcodeproj \
+            -scheme BadmintonVAR \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/BadmintonVAR.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package Payload into IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/BadmintonVAR.xcarchive/Products/Applications/BadmintonVAR.app Payload/
+          zip -r BadmintonVAR.ipa Payload
+          echo "IPA packaging completed successfully."
+
+      - name: Upload IPA to GitHub Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: BadmintonVAR-iPhone
+          path: BadmintonVAR.ipa
+          retention-days: 14
