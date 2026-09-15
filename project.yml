@@ -10,7 +10,9 @@ targets:
     platform: iOS
     deploymentTarget: "16.0"
     sources:
-      - BadmintonVAR
+      - path: BadmintonVAR
+        excludes:
+          - "Resources/Info.plist"
     settings:
       base:
         PRODUCT_NAME: "BadmintonVAR"
@@ -26,3 +28,4 @@ targets:
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
+        AD_HOC_CODE_SIGNING_ALLOWED: YES

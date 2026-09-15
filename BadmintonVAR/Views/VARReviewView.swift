@@ -364,10 +364,10 @@ public struct VARReviewView: View {
         
         // Quan sát thời gian thực
         let interval = CMTime(value: 1, timescale: CMTimeScale(fps))
-        timeObserverToken = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [self] time in
+        timeObserverToken = avPlayer.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
             let sec = CMTimeGetSeconds(time)
-            self.currentTime = sec
-            self.currentFrameIndex = Int(sec * fps)
+            currentTime = sec
+            currentFrameIndex = Int(sec * fps)
         }
     }
     
@@ -440,7 +440,7 @@ public struct VARReviewView: View {
                 let uiImage = UIImage(cgImage: image)
                 UIImageWriteToSavedPhotosAlbum(uiImage, nil, nil, nil)
                 DispatchQueue.main.async {
-                    self.saveSuccessAlert = true
+                    saveSuccessAlert = true
                 }
             }
         }

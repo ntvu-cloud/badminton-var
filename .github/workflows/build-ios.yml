@@ -25,13 +25,14 @@ jobs:
       - name: Generate Xcode Project
         run: xcodegen generate
 
-      - name: Build Archive (Unsigned for Sideloading)
+      - name: Build App (Release Unsigned)
         run: |
-          xcodebuild clean archive \
+          xcodebuild build \
             -project BadmintonVAR.xcodeproj \
             -scheme BadmintonVAR \
+            -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath build/BadmintonVAR.xcarchive \
+            -derivedDataPath build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
@@ -39,7 +40,7 @@ jobs:
       - name: Package Payload into IPA
         run: |
           mkdir -p Payload
-          cp -r build/BadmintonVAR.xcarchive/Products/Applications/BadmintonVAR.app Payload/
+          cp -r build/Build/Products/Release-iphoneos/BadmintonVAR.app Payload/
           zip -r BadmintonVAR.ipa Payload
           echo "IPA packaging completed successfully."
 
