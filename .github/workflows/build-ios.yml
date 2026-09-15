@@ -29,26 +29,25 @@ jobs:
 
       - name: Build App (Release Unsigned)
         run: |
-          set +e
           xcodebuild build \
             -project BadmintonVAR.xcodeproj \
-            -scheme BadmintonVAR \
+            -target BadmintonVAR \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_STYLE="Manual" > build.log 2>&1
-          STATUS=$?
-          if [ $STATUS -ne 0 ]; then
-            echo "### Build Failed with code $STATUS" >> $GITHUB_STEP_SUMMARY
-            echo '```text' >> $GITHUB_STEP_SUMMARY
-            tail -n 80 build.log >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-            cat build.log
-            exit $STATUS
-          fi
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_STYLE="Manual" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES > xcodebuild.log 2>&1 || (cat xcodebuild.log ; exit 1)
+          cat xcodebuild.log | tail -n 30
+
+      - name: Upload Build Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Build-Logs
+          path: xcodebuild.log
 
       - name: Package Payload into IPA
         run: |
