@@ -31,7 +31,7 @@ jobs:
         run: |
           xcodebuild build \
             -project BadmintonVAR.xcodeproj \
-            -target BadmintonVAR \
+            -scheme BadmintonVAR \
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
