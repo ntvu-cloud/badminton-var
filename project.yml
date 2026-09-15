@@ -3,7 +3,7 @@ options:
   bundleIdPrefix: com.badmintonvar
   deploymentTarget:
     iOS: "16.0"
-  xcodeVersion: "15.4"
+  xcodeVersion: "16.0"
   projectVersion: 56
 targets:
   BadmintonVAR:
@@ -14,14 +14,13 @@ targets:
       - path: BadmintonVAR
         excludes:
           - "Resources/Info.plist"
+          - "Resources/Assets.xcassets"
     settings:
       base:
         PRODUCT_NAME: "BadmintonVAR"
         PRODUCT_BUNDLE_IDENTIFIER: com.badmintonvar.app
         INFOPLIST_FILE: BadmintonVAR/Resources/Info.plist
         GENERATE_INFOPLIST_FILE: NO
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         SWIFT_VERSION: "5.9"
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
