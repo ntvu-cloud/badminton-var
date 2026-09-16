@@ -287,6 +287,18 @@ public class CameraManager: NSObject, ObservableObject {
             }
         }
     }
+    
+    // MARK: - Đồng bộ hướng quay video theo hướng màn hình
+    public func setVideoOrientation(_ orientation: AVCaptureVideoOrientation) {
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            if let connection = self.videoOutput.connection(with: .video), connection.isVideoOrientationSupported {
+                if connection.videoOrientation != orientation {
+                    connection.videoOrientation = orientation
+                }
+            }
+        }
+    }
 }
 
 // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate

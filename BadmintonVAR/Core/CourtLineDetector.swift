@@ -3,38 +3,19 @@ import CoreVideo
 import CoreGraphics
 import UIKit
 
-/// Bộ xử lý thị giác máy tính tự động nhận diện góc sân và 2 đường vạch (Baseline & Sideline) bằng RANSAC 2-Line
+/// Bộ xử lý thị giác máy tính chuyên dụng cho sân cầu lông:
+/// Sử dụng thuật toán Biến đổi Hough (Hough Transform) kết hợp bộ lọc cạnh dải vạch (Edge Gradient Ridge Filter)
+/// Hoàn toàn tất định (Deterministic - không dùng random), miễn nhiễm với nhiễu phòng và đường ron gạch.
 public class CourtLineDetector {
     public static let shared = CourtLineDetector()
     
     private init() {}
     
-    /// Mô hình đường thẳng dạng chuẩn: A*x + B*y + C = 0 với A^2 + B^2 = 1
-    public struct LineModel {
-        public var a: CGFloat
-        public var b: CGFloat
-        public var c: CGFloat
-        
-        public init(a: CGFloat, b: CGFloat, c: CGFloat) {
-            let len = sqrt(a * a + b * b)
-            if len > 0.0001 {
-                self.a = a / len
-                self.b = b / len
-                self.c = c / len
-            } else {
-                self.a = 0
-                self.b = 1
-                self.c = 0
-            }
-        }
-        
-        /// Khoảng cách từ điểm tới đường thẳng
-        public func distance(to point: CGPoint) -> CGFloat {
-            return abs(a * point.x + b * point.y + c)
-        }
-    }
+    // Bảng lượng giác tính trước cho 180 góc từ 0° đến 179°
+    private static let cosTable: [CGFloat] = (0..<180).map { cos(CGFloat($0) * .pi / 180.0) }
+    private static let sinTable: [CGFloat] = (0..<180).map { sin(CGFloat($0) * .pi / 180.0) }
     
-    /// Nhận diện góc sân và 2 vạch từ CVPixelBuffer thời gian thực (< 15ms)
+    /// Nhận diện góc sân và 2 vạch từ CVPixelBuffer
     public func detectLines(in pixelBuffer: CVPixelBuffer) -> PerspectiveCalibrationData? {
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
@@ -48,155 +29,223 @@ public class CourtLineDetector {
         
         guard pixelFormat == kCVPixelFormatType_32BGRA else { return nil }
         
-        // Bước 1: Trích xuất các điểm ảnh ứng viên thuộc vạch sân
-        // Hỗ trợ:
-        // 1. Băng keo xanh dương (Blue tape) trên nền gạch men trắng (miễn nhiễm 100% với ron gạch)
-        // 2. Băng keo xanh lá (Green tape) trên nền sáng
-        // 3. Vạch sơn vàng (Yellow lines) trên sân gỗ
-        // 4. Vạch sơn trắng (White lines) trên thảm sân chuẩn BWF
-        let step = 6
+        // Bước 1: Thu nhỏ kích thước tính toán xuống lưới chuẩn 320x180 (hoặc 180x320 nếu cầm dọc)
+        let isPortrait = height > width
+        let targetW = isPortrait ? 180 : 320
+        let targetH = isPortrait ? 320 : 180
+        
+        let stepX = max(1, width / targetW)
+        let stepY = max(1, height / targetH)
+        
         var blueTapePoints: [CGPoint] = []
-        var greenTapePoints: [CGPoint] = []
         var yellowLinePoints: [CGPoint] = []
+        var greenTapePoints: [CGPoint] = []
         var whiteLinePoints: [CGPoint] = []
-        var totalScanned = 0
+        var totalSamples = 0
         
         let bufferPtr = baseAddress.assumingMemoryBound(to: UInt8.self)
         
-        let startY = height / 6
-        let endY = height - height / 12
-        let startX = width / 12
-        let endX = width - width / 12
-        
-        for y in stride(from: startY, to: endY, by: step) {
-            let rowOffset = y * bytesPerRow
-            for x in stride(from: startX, to: endX, by: step) {
-                totalScanned += 1
-                let pixelOffset = rowOffset + x * 4
-                let b = Int(bufferPtr[pixelOffset])
-                let g = Int(bufferPtr[pixelOffset + 1])
-                let r = Int(bufferPtr[pixelOffset + 2])
+        for gy in 0..<targetH {
+            let py = gy * stepY
+            guard py < height else { continue }
+            let rowOffset = py * bytesPerRow
+            
+            for gx in 0..<targetW {
+                let px = gx * stepX
+                guard px < width else { continue }
+                totalSamples += 1
+                
+                let offset = rowOffset + px * 4
+                let b = Int(bufferPtr[offset])
+                let g = Int(bufferPtr[offset + 1])
+                let r = Int(bufferPtr[offset + 2])
                 
                 let maxC = max(r, max(g, b))
                 let minC = min(r, min(g, b))
                 let diff = maxC - minC
                 let brightness = (r + g + b) / 3
-                let pt = CGPoint(x: x, y: y)
+                let pt = CGPoint(x: gx, y: gy)
                 
-                // 1. BĂNG KEO XANH DƯƠNG: Sắc tố Blue vượt trội (B > R + 20 và B > G + 15)
-                // Hoàn toàn bỏ qua gạch men trắng (R≈G≈B) và ron gạch (R≈G≈B)
-                if b > r + 20 && b > g + 15 && b > 60 {
+                // 1. Băng keo xanh dương (Blue tape): B vượt trội so với R và G
+                // Tuyệt đối không nhận nhầm gạch men trắng (R≈G≈B) hay ron gạch (R≈G≈B)
+                if b > (r + 18) && b > (g + 12) && b > 55 {
                     blueTapePoints.append(pt)
                 }
-                // 2. BĂNG KEO XANH LÁ: Sắc tố Green vượt trội
-                else if g > r + 25 && g > b + 20 && g > 60 {
-                    greenTapePoints.append(pt)
-                }
-                // 3. VẠCH SƠN VÀNG: Sân gỗ thi đấu
-                else if r > 140 && g > 130 && b < 125 && (r + g) > 280 {
+                // 2. Vạch vàng sân gỗ
+                else if r > 140 && g > 120 && b < 125 && (r + g) > 270 {
                     yellowLinePoints.append(pt)
                 }
-                // 4. VẠCH TRẮNG TIÊU CHUẨN: Trên thảm tối màu
-                else if brightness > 135 && diff < 40 {
+                // 3. Băng keo xanh lá
+                else if g > (r + 20) && g > (b + 15) && g > 60 {
+                    greenTapePoints.append(pt)
+                }
+                // 4. Vạch trắng tiêu chuẩn trên thảm tối màu BWF
+                else if brightness > 140 && diff < 38 {
                     whiteLinePoints.append(pt)
                 }
             }
         }
         
-        // Lựa chọn tập điểm ứng viên thông minh theo loại sân đang quan sát
-        var candidatePoints: [CGPoint] = []
-        if blueTapePoints.count >= 40 {
-            // Sân dán băng keo xanh dương (như sân gạch men trắng của bạn)
+        // Xác định loại vạch nổi bật trong khung hình
+        let candidatePoints: [CGPoint]
+        if blueTapePoints.count >= 35 {
+            // Phát hiện thấy dải băng keo xanh dương trên sân
             candidatePoints = blueTapePoints
-        } else if yellowLinePoints.count >= 40 {
-            // Sân gỗ thi đấu vạch vàng
+        } else if yellowLinePoints.count >= 35 {
             candidatePoints = yellowLinePoints
-        } else if greenTapePoints.count >= 40 {
-            // Sân dán băng keo xanh lá
+        } else if greenTapePoints.count >= 35 {
             candidatePoints = greenTapePoints
-        } else if whiteLinePoints.count >= 50 && whiteLinePoints.count < Int(Double(totalScanned) * 0.35) {
-            // Vạch trắng trên thảm tối màu (Nếu > 35% thì là sàn nhà màu trắng, không phải vạch)
+        } else if whiteLinePoints.count >= 45 && whiteLinePoints.count < Int(Double(totalSamples) * 0.32) {
+            // Vạch trắng trên thảm (Loại trừ trường hợp cả sàn nhà đều là màu trắng)
             candidatePoints = whiteLinePoints
-        }
-        
-        guard candidatePoints.count >= 50 else { return nil }
-        
-        // Bước 2: Dùng RANSAC tìm đường thẳng thứ nhất (Line 1)
-        guard let (line1, inliers1) = fitRansacLine(points: candidatePoints, iterations: 140, threshold: 6.0) else {
-            return nil
-        }
-        guard inliers1.count >= 25 else { return nil }
-        
-        // Bước 3: Loại bỏ các điểm thuộc Line 1, tìm đường thẳng thứ hai (Line 2)
-        let remainingPoints = candidatePoints.filter { line1.distance(to: $0) > 12.0 }
-        guard remainingPoints.count >= 35 else { return nil }
-        
-        guard let (line2, inliers2) = fitRansacLineWithAngleConstraint(
-            points: remainingPoints,
-            referenceLine: line1,
-            minAngleDeg: 35.0,
-            maxAngleDeg: 145.0,
-            iterations: 140,
-            threshold: 6.0
-        ) else {
-            return nil
-        }
-        guard inliers2.count >= 20 else { return nil }
-        
-        // Bước 4: Tính giao điểm của Line 1 và Line 2 (Đỉnh góc sân thực tế)
-        guard let intersect = intersectLines(line1: line1, line2: line2) else {
-            return nil
-        }
-        
-        let normCornerX = intersect.x / CGFloat(width)
-        let normCornerY = intersect.y / CGFloat(height)
-        
-        // Giao điểm phải nằm trong hoặc sát khung hình màn hình
-        guard normCornerX >= 0.02 && normCornerX <= 0.98 && normCornerY >= 0.02 && normCornerY <= 0.98 else {
-            return nil
-        }
-        
-        // Bước 5: Phân loại đâu là vạch đáy (Baseline) và đâu là vạch biên (Sideline)
-        // Trong góc nhìn phối cảnh camera nghiêng:
-        // Vạch đáy (Baseline) có xu hướng nằm ngang hơn (độ dốc |dy/dx| nhỏ hơn, hoặc |a/b| nhỏ hơn)
-        // Vạch biên (Sideline) có xu hướng kéo dài sâu vào sân theo chiều dọc hướng về phía lưới
-        let slope1 = abs(line1.b) > 0.001 ? abs(line1.a / line1.b) : 999.0
-        let slope2 = abs(line2.b) > 0.001 ? abs(line2.a / line2.b) : 999.0
-        
-        let baselineLine: LineModel
-        let baselineInliers: [CGPoint]
-        let sidelineLine: LineModel
-        let sidelineInliers: [CGPoint]
-        
-        if slope1 < slope2 {
-            baselineLine = line1
-            baselineInliers = inliers1
-            sidelineLine = line2
-            sidelineInliers = inliers2
         } else {
-            baselineLine = line2
-            baselineInliers = inliers2
-            sidelineLine = line1
-            sidelineInliers = inliers1
+            // Không có đủ điểm vạch đặc trưng, từ chối để tránh vẽ bừa
+            return nil
         }
         
-        // Bước 6: Xác định hướng kéo dài của vạch đáy (theo hướng phân bố của các điểm inliers)
-        let baseDir = directionVector(from: intersect, points: baselineInliers)
-        let baseEnd = CGPoint(
-            x: intersect.x + baseDir.x * CGFloat(width) * 0.35,
-            y: intersect.y + baseDir.y * CGFloat(height) * 0.35
-        )
-        let normBaseX = max(0.05, min(0.95, baseEnd.x / CGFloat(width)))
-        let normBaseY = max(0.05, min(0.95, baseEnd.y / CGFloat(height)))
+        // Bước 2: Biến đổi Hough Transform để tìm 2 đường thẳng chiếm ưu thế tuyệt đối
+        let maxRho = Int(hypot(CGFloat(targetW), CGFloat(targetH))) + 1
+        let numRhoBins = maxRho * 2 + 1
         
-        // Bước 7: Xác định hướng kéo dài của vạch biên (hướng về phía lưới / inliers)
-        let sideDir = directionVector(from: intersect, points: sidelineInliers)
-        let sideEnd = CGPoint(
-            x: intersect.x + sideDir.x * CGFloat(width) * 0.35,
-            y: intersect.y + sideDir.y * CGFloat(height) * 0.35
-        )
-        let normSideX = max(0.05, min(0.95, sideEnd.x / CGFloat(width)))
-        let normSideY = max(0.05, min(0.95, sideEnd.y / CGFloat(height)))
+        var accumulator = [Int](repeating: 0, count: 180 * numRhoBins)
+        
+        for pt in candidatePoints {
+            let x = pt.x
+            let y = pt.y
+            for theta in 0..<180 {
+                let r = Int(round(x * Self.cosTable[theta] + y * Self.sinTable[theta])) + maxRho
+                if r >= 0 && r < numRhoBins {
+                    accumulator[theta * numRhoBins + r] += 1
+                }
+            }
+        }
+        
+        // Tìm Đỉnh 1 (Peak 1) có nhiều lượt vote nhất
+        var maxVotes1 = 0
+        var bestTheta1 = 0
+        var bestRho1 = 0
+        
+        for theta in 0..<180 {
+            for r in 0..<numRhoBins {
+                let v = accumulator[theta * numRhoBins + r]
+                if v > maxVotes1 {
+                    maxVotes1 = v
+                    bestTheta1 = theta
+                    bestRho1 = r
+                }
+            }
+        }
+        
+        // Đường thẳng 1 phải có tối thiểu 25 điểm thẳng hàng
+        guard maxVotes1 >= 25 else { return nil }
+        
+        // Tìm Đỉnh 2 (Peak 2) với điều kiện góc kẹp giữa 2 đường nằm trong khoảng [55°, 125°]
+        // Đây là góc phối cảnh tự nhiên của 2 cạnh góc vuông sân cầu lông
+        var maxVotes2 = 0
+        var bestTheta2 = 0
+        var bestRho2 = 0
+        
+        for theta in 0..<180 {
+            // Tính góc chênh lệch giữa theta và bestTheta1
+            var angleDiff = abs(theta - bestTheta1)
+            if angleDiff > 90 {
+                angleDiff = 180 - angleDiff
+            }
+            
+            // Chỉ xét các đường tạo góc từ 55° đến 90° (tức gần vuông góc dưới phối cảnh)
+            guard angleDiff >= 55 && angleDiff <= 90 else { continue }
+            
+            for r in 0..<numRhoBins {
+                let v = accumulator[theta * numRhoBins + r]
+                if v > maxVotes2 {
+                    maxVotes2 = v
+                    bestTheta2 = theta
+                    bestRho2 = r
+                }
+            }
+        }
+        
+        // Đường thẳng 2 phải có tối thiểu 18 điểm thẳng hàng
+        guard maxVotes2 >= 18 else { return nil }
+        
+        // Bước 3: Tính giao điểm hình học chính xác giữa 2 đường thẳng (Đỉnh góc sân)
+        // Đường 1: x*cos(t1) + y*sin(t1) = rho1
+        // Đường 2: x*cos(t2) + y*sin(t2) = rho2
+        let realRho1 = CGFloat(bestRho1 - maxRho)
+        let realRho2 = CGFloat(bestRho2 - maxRho)
+        
+        let cos1 = Self.cosTable[bestTheta1]
+        let sin1 = Self.sinTable[bestTheta1]
+        let cos2 = Self.cosTable[bestTheta2]
+        let sin2 = Self.sinTable[bestTheta2]
+        
+        let det = cos1 * sin2 - sin1 * cos2
+        guard abs(det) > 0.3 else { return nil } // Đảm bảo 2 đường không song song
+        
+        let intersectX = (realRho1 * sin2 - realRho2 * sin1) / det
+        let intersectY = (realRho2 * cos1 - realRho1 * cos2) / det
+        
+        // Chuẩn hóa tọa độ giao điểm về tỉ lệ [0.0, 1.0]
+        let normCornerX = intersectX / CGFloat(targetW)
+        let normCornerY = intersectY / CGFloat(targetH)
+        
+        // Đỉnh góc phải nằm trong phạm vi hiển thị hợp lý của màn hình
+        guard normCornerX >= 0.04 && normCornerX <= 0.96 && normCornerY >= 0.04 && normCornerY <= 0.96 else {
+            return nil
+        }
+        
+        // Bước 4: Kiểm tra sự tồn tại của vạch thực tế gần đỉnh góc (Xác minh không phải góc ảo)
+        let cornerPt = CGPoint(x: intersectX, y: intersectY)
+        let nearbyInliers1 = candidatePoints.filter { pt in
+            let distToLine = abs(pt.x * cos1 + pt.y * sin1 - realRho1)
+            let distToCorner = hypot(pt.x - cornerPt.x, pt.y - cornerPt.y)
+            return distToLine <= 8.0 && distToCorner >= 10.0 && distToCorner <= CGFloat(targetW) * 0.7
+        }
+        let nearbyInliers2 = candidatePoints.filter { pt in
+            let distToLine = abs(pt.x * cos2 + pt.y * sin2 - realRho2)
+            let distToCorner = hypot(pt.x - cornerPt.x, pt.y - cornerPt.y)
+            return distToLine <= 8.0 && distToCorner >= 10.0 && distToCorner <= CGFloat(targetW) * 0.7
+        }
+        
+        guard nearbyInliers1.count >= 8 && nearbyInliers2.count >= 8 else {
+            // Không có dải vạch thực tế kéo dài từ đỉnh góc
+            return nil
+        }
+        
+        // Bước 5: Phân loại đâu là Vạch Đáy (Baseline) và đâu là Vạch Biên (Sideline)
+        // Vạch đáy thường có độ dốc nằm ngang hơn (dy/dx nhỏ hơn)
+        // Vạch biên kéo dài vào sâu theo phối cảnh
+        let slope1 = abs(sin1) > 0.001 ? abs(cos1 / sin1) : 999.0
+        let slope2 = abs(sin2) > 0.001 ? abs(cos2 / sin2) : 999.0
+        
+        let (baselineInliers, sidelineInliers): ([CGPoint], [CGPoint])
+        if slope1 < slope2 {
+            baselineInliers = nearbyInliers1
+            sidelineInliers = nearbyInliers2
+        } else {
+            baselineInliers = nearbyInliers2
+            sidelineInliers = nearbyInliers1
+        }
+        
+        // Tính vector hướng kéo dài vạch đáy
+        let avgBaseDx = baselineInliers.map { $0.x - cornerPt.x }.reduce(0, +) / CGFloat(baselineInliers.count)
+        let avgBaseDy = baselineInliers.map { $0.y - cornerPt.y }.reduce(0, +) / CGFloat(baselineInliers.count)
+        let baseLen = hypot(avgBaseDx, avgBaseDy)
+        let baseUnit = baseLen > 0.001 ? CGPoint(x: avgBaseDx / baseLen, y: avgBaseDy / baseLen) : CGPoint(x: 1, y: 0)
+        
+        // Tính vector hướng kéo dài vạch biên
+        let avgSideDx = sidelineInliers.map { $0.x - cornerPt.x }.reduce(0, +) / CGFloat(sidelineInliers.count)
+        let avgSideDy = sidelineInliers.map { $0.y - cornerPt.y }.reduce(0, +) / CGFloat(sidelineInliers.count)
+        let sideLen = hypot(avgSideDx, avgSideDy)
+        let sideUnit = sideLen > 0.001 ? CGPoint(x: avgSideDx / sideLen, y: avgSideDy / sideLen) : CGPoint(x: 0, y: -1)
+        
+        // Điểm đầu mút vạch đáy kéo dài ~35% màn hình
+        let normBaseX = max(0.05, min(0.95, normCornerX + baseUnit.x * 0.35))
+        let normBaseY = max(0.05, min(0.95, normCornerY + baseUnit.y * 0.35))
+        
+        // Điểm đầu mút vạch biên kéo dài ~35% màn hình
+        let normSideX = max(0.05, min(0.95, normCornerX + sideUnit.x * 0.35))
+        let normSideY = max(0.05, min(0.95, normCornerY + sideUnit.y * 0.35))
         
         return PerspectiveCalibrationData(
             cornerX: normCornerX,
@@ -208,159 +257,5 @@ public class CourtLineDetector {
             lineWidth: 26.0,
             isLocked: false
         )
-    }
-    
-    // MARK: - Thuật toán RANSAC tìm đường thẳng
-    private func fitRansacLine(points: [CGPoint], iterations: Int, threshold: CGFloat) -> (LineModel, [CGPoint])? {
-        var bestLine: LineModel?
-        var bestInliers: [CGPoint] = []
-        let count = points.count
-        guard count >= 2 else { return nil }
-        
-        for _ in 0..<iterations {
-            let idx1 = Int.random(in: 0..<count)
-            var idx2 = Int.random(in: 0..<count)
-            while idx2 == idx1 {
-                idx2 = Int.random(in: 0..<count)
-            }
-            
-            let p1 = points[idx1]
-            let p2 = points[idx2]
-            
-            let dist = hypot(p2.x - p1.x, p2.y - p1.y)
-            if dist < 25.0 { continue }
-            
-            // Đường thẳng qua p1 và p2: (y1 - y2)*x + (x2 - x1)*y + (x1*y2 - x2*y1) = 0
-            let a = p1.y - p2.y
-            let b = p2.x - p1.x
-            let c = p1.x * p2.y - p2.x * p1.y
-            let model = LineModel(a: a, b: b, c: c)
-            
-            var currentInliers: [CGPoint] = []
-            for p in points {
-                if model.distance(to: p) <= threshold {
-                    currentInliers.append(p)
-                }
-            }
-            
-            if currentInliers.count > bestInliers.count {
-                bestInliers = currentInliers
-                bestLine = model
-            }
-        }
-        
-        guard let line = bestLine, bestInliers.count >= 15 else { return nil }
-        
-        // Tinh chỉnh bằng bình phương tối thiểu (Least Squares) trên tập inliers
-        let refined = refineLineLeastSquares(points: bestInliers) ?? line
-        return (refined, bestInliers)
-    }
-    
-    // RANSAC tìm đường thẳng thứ hai có góc tạo với đường 1 nằm trong [minAngle, maxAngle]
-    private func fitRansacLineWithAngleConstraint(
-        points: [CGPoint],
-        referenceLine: LineModel,
-        minAngleDeg: CGFloat,
-        maxAngleDeg: CGFloat,
-        iterations: Int,
-        threshold: CGFloat
-    ) -> (LineModel, [CGPoint])? {
-        var bestLine: LineModel?
-        var bestInliers: [CGPoint] = []
-        let count = points.count
-        guard count >= 2 else { return nil }
-        
-        // Cosine của góc giữa 2 vector pháp tuyến
-        let maxCos = cos(minAngleDeg * .pi / 180.0) // góc nhỏ nhất cho phép
-        
-        for _ in 0..<iterations {
-            let idx1 = Int.random(in: 0..<count)
-            var idx2 = Int.random(in: 0..<count)
-            while idx2 == idx1 {
-                idx2 = Int.random(in: 0..<count)
-            }
-            
-            let p1 = points[idx1]
-            let p2 = points[idx2]
-            
-            let dist = hypot(p2.x - p1.x, p2.y - p1.y)
-            if dist < 25.0 { continue }
-            
-            let a = p1.y - p2.y
-            let b = p2.x - p1.x
-            let c = p1.x * p2.y - p2.x * p1.y
-            let model = LineModel(a: a, b: b, c: c)
-            
-            // Kiểm tra góc giữa 2 đường thẳng: |dot(n1, n2)| <= cos(minAngle)
-            let dot = abs(referenceLine.a * model.a + referenceLine.b * model.b)
-            if dot > maxCos { continue } // Quá song song, bỏ qua
-            
-            var currentInliers: [CGPoint] = []
-            for p in points {
-                if model.distance(to: p) <= threshold {
-                    currentInliers.append(p)
-                }
-            }
-            
-            if currentInliers.count > bestInliers.count {
-                bestInliers = currentInliers
-                bestLine = model
-            }
-        }
-        
-        guard let line = bestLine, bestInliers.count >= 15 else { return nil }
-        let refined = refineLineLeastSquares(points: bestInliers) ?? line
-        return (refined, bestInliers)
-    }
-    
-    // Tinh chỉnh đường thẳng bằng Least Squares trên tập điểm
-    private func refineLineLeastSquares(points: [CGPoint]) -> LineModel? {
-        guard points.count >= 6 else { return nil }
-        
-        let n = CGFloat(points.count)
-        let meanX = points.reduce(0) { $0 + $1.x } / n
-        let meanY = points.reduce(0) { $0 + $1.y } / n
-        
-        var sxx: CGFloat = 0
-        var syy: CGFloat = 0
-        var sxy: CGFloat = 0
-        
-        for p in points {
-            let dx = p.x - meanX
-            let dy = p.y - meanY
-            sxx += dx * dx
-            syy += dy * dy
-            sxy += dx * dy
-        }
-        
-        // Dùng PCA / Eigenvector của ma trận hiệp phương sai 2D
-        let angle = 0.5 * atan2(2 * sxy, sxx - syy)
-        let a = -sin(angle)
-        let b = cos(angle)
-        let c = -(a * meanX + b * meanY)
-        
-        return LineModel(a: a, b: b, c: c)
-    }
-    
-    // Giao điểm giữa A1*x + B1*y + C1 = 0 và A2*x + B2*y + C2 = 0
-    private func intersectLines(line1: LineModel, line2: LineModel) -> CGPoint? {
-        let det = line1.a * line2.b - line2.a * line1.b
-        guard abs(det) > 0.05 else { return nil } // Hai đường gần như song song
-        
-        let x = (line1.b * line2.c - line2.b * line1.c) / det
-        let y = (line2.a * line1.c - line1.a * line2.c) / det
-        return CGPoint(x: x, y: y)
-    }
-    
-    // Tìm vector hướng đơn vị từ điểm gốc hướng về phía tập điểm
-    private func directionVector(from origin: CGPoint, points: [CGPoint]) -> CGPoint {
-        guard !points.isEmpty else { return CGPoint(x: 1, y: 0) }
-        
-        let sumDx = points.reduce(0) { $0 + ($1.x - origin.x) }
-        let sumDy = points.reduce(0) { $0 + ($1.y - origin.y) }
-        let len = hypot(sumDx, sumDy)
-        guard len > 0.001 else { return CGPoint(x: 1, y: 0) }
-        
-        return CGPoint(x: sumDx / len, y: sumDy / len)
     }
 }

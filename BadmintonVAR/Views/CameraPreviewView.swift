@@ -306,6 +306,16 @@ public struct CameraPreviewView: View {
             
             Spacer()
             
+            // Nút Đặt lại góc chuẩn mặc định
+            Button(action: resetCalibration) {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(.white)
+                    .frame(width: 32, height: 32)
+                    .background(Color.white.opacity(0.18))
+                    .clipShape(Circle())
+            }
+            
             // Nút Khóa góc
             Button(action: lockCalibration) {
                 HStack(spacing: 4) {
@@ -378,6 +388,12 @@ public struct CameraPreviewView: View {
     private func lockCalibration() {
         calibration.isLocked = true
         saveCalibration()
+    }
+    
+    private func resetCalibration() {
+        self.calibration = .default
+        saveCalibration()
+        showDetectionToast("🔄 Đã khôi phục góc vạch mặc định")
     }
     
     private func saveCalibration() {
@@ -477,6 +493,34 @@ class CameraPreviewUIView: UIView {
     
     var previewLayer: AVCaptureVideoPreviewLayer {
         return layer as! AVCaptureVideoPreviewLayer
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        previewLayer.frame = bounds
+        updateOrientation()
+    }
+    
+    func updateOrientation() {
+        guard let connection = previewLayer.connection, connection.isVideoOrientationSupported else { return }
+        let currentOrientation = currentVideoOrientation()
+        if connection.videoOrientation != currentOrientation {
+            connection.videoOrientation = currentOrientation
+        }
+        CameraManager.shared.setVideoOrientation(currentOrientation)
+    }
+    
+    private func currentVideoOrientation() -> AVCaptureVideoOrientation {
+        if let windowScene = window?.windowScene {
+            switch windowScene.interfaceOrientation {
+            case .landscapeLeft: return .landscapeLeft
+            case .landscapeRight: return .landscapeRight
+            case .portraitUpsideDown: return .portraitUpsideDown
+            case .portrait: return .portrait
+            default: return .landscapeRight
+            }
+        }
+        return .landscapeRight
     }
 }
 
