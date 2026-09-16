@@ -13,6 +13,8 @@ public struct CameraPreviewView: View {
     // MARK: - Căn vạch phối cảnh 3 điểm & Khóa góc
     @State private var showLineOverlay: Bool = true
     @State private var calibration: PerspectiveCalibrationData = .default
+    @State private var isAutoDetecting: Bool = false
+    @State private var detectionToast: String? = nil
     
     // Khi Challenge được kích hoạt
     @State private var reviewVideoURL: URL?
@@ -53,6 +55,33 @@ public struct CameraPreviewView: View {
                     .frame(width: 70, height: 70)
                     .position(focus)
                     .transition(.opacity)
+            }
+            
+            // Thông báo kết quả tự động bắt vạch (Toast Feedback)
+            if let toast = detectionToast {
+                VStack {
+                    HStack(spacing: 8) {
+                        Image(systemName: toast.contains("🎯") ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundColor(toast.contains("🎯") ? .green : .yellow)
+                        Text(toast)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.92))
+                    .cornerRadius(20)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .stroke(toast.contains("🎯") ? Color.green.opacity(0.8) : Color.yellow.opacity(0.8), lineWidth: 1.5)
+                    )
+                    .shadow(color: Color.black.opacity(0.6), radius: 10, x: 0, y: 4)
+                    .padding(.top, 75)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    
+                    Spacer()
+                }
+                .zIndex(99)
             }
             
             // MARK: - Live HUD Overlays
@@ -236,27 +265,53 @@ public struct CameraPreviewView: View {
     // MARK: - Thanh công cụ khi đang căn vạch
     private var calibrationToolbar: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Kéo 3 chấm tròn trùng vào góc sân thực tế")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.yellow)
-                HStack(spacing: 8) {
-                    Text("Độ dày vạch:")
-                        .font(.system(size: 10))
-                        .foregroundColor(.gray)
-                    Slider(value: $calibration.lineWidth, in: 14...50, step: 2)
-                        .frame(width: 110)
-                        .accentColor(.yellow)
+            // Nút Tự Động Bắt Vạch Sân
+            Button(action: runAutoLineDetection) {
+                HStack(spacing: 6) {
+                    if isAutoDetecting {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .black))
+                            .scaleEffect(0.8)
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    Text(isAutoDetecting ? "ĐANG BẮT VẠCH..." : "🤖 TỰ ĐỘNG BẮT VẠCH")
+                        .font(.system(size: 11, weight: .black))
                 }
+                .foregroundColor(.black)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    LinearGradient(
+                        colors: [Color.yellow, Color.orange],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .cornerRadius(10)
+                .shadow(color: .yellow.opacity(0.4), radius: 5)
+            }
+            .disabled(isAutoDetecting)
+            
+            // Tinh chỉnh độ dày vạch
+            HStack(spacing: 6) {
+                Text("Độ dày:")
+                    .font(.system(size: 10))
+                    .foregroundColor(.gray)
+                Slider(value: $calibration.lineWidth, in: 14...50, step: 2)
+                    .frame(width: 85)
+                    .accentColor(.yellow)
             }
             
             Spacer()
             
+            // Nút Khóa góc
             Button(action: lockCalibration) {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.seal.fill")
                     Text("KHÓA GÓC")
-                        .font(.system(size: 12, weight: .black))
+                        .font(.system(size: 11, weight: .black))
                 }
                 .foregroundColor(.black)
                 .padding(.horizontal, 14)
@@ -266,7 +321,7 @@ public struct CameraPreviewView: View {
                 .shadow(color: .green.opacity(0.5), radius: 6)
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.black.opacity(0.85))
         .cornerRadius(12)
@@ -350,6 +405,50 @@ public struct CameraPreviewView: View {
             if let videoURL = url {
                 self.reviewVideoURL = videoURL
                 self.showReviewView = true
+            }
+        }
+    }
+    
+    // MARK: - Tự Động Bắt Vạch Sân (Auto Line & Corner Snapping)
+    private func runAutoLineDetection() {
+        guard let pixelBuffer = camera.latestPixelBuffer else {
+            showDetectionToast("⚠️ Chưa có khung hình từ Camera.")
+            return
+        }
+        
+        isAutoDetecting = true
+        let gen = UIImpactFeedbackGenerator(style: .medium)
+        gen.impactOccurred()
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = CourtLineDetector.shared.detectLines(in: pixelBuffer)
+            
+            DispatchQueue.main.async {
+                self.isAutoDetecting = false
+                if let detected = result {
+                    self.calibration = detected
+                    self.saveCalibration()
+                    let successGen = UINotificationFeedbackGenerator()
+                    successGen.notificationOccurred(.success)
+                    self.showDetectionToast("🎯 ĐÃ TỰ ĐỘNG BẮT ĐÚNG GÓC VÀ MÉP VẠCH!")
+                } else {
+                    let warnGen = UINotificationFeedbackGenerator()
+                    warnGen.notificationOccurred(.warning)
+                    self.showDetectionToast("⚠️ Chưa nhận diện rõ vạch. Hãy hướng camera vào góc sân.")
+                }
+            }
+        }
+    }
+    
+    private func showDetectionToast(_ message: String) {
+        withAnimation(.spring()) {
+            self.detectionToast = message
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) {
+            if self.detectionToast == message {
+                withAnimation(.easeOut) {
+                    self.detectionToast = nil
+                }
             }
         }
     }

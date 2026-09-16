@@ -23,6 +23,9 @@ public class CameraManager: NSObject, ObservableObject {
     @Published public var focusPoint: CGPoint? = nil
     @Published public var errorMessage: String? = nil
     
+    // Pixel Buffer gần nhất để phân tích nhận diện vạch tự động
+    public var latestPixelBuffer: CVPixelBuffer?
+    
     // MARK: - Capture Session & Devices
     public let captureSession = AVCaptureSession()
     private var videoDevice: AVCaptureDevice?
@@ -289,6 +292,9 @@ public class CameraManager: NSObject, ObservableObject {
 // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            self.latestPixelBuffer = pixelBuffer
+        }
         // Chuyển frame vào bộ đệm vòng (Rolling Buffer)
         rollingBuffer?.appendSample(sampleBuffer)
     }
