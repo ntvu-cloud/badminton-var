@@ -48,10 +48,19 @@ public class CourtLineDetector {
         
         guard pixelFormat == kCVPixelFormatType_32BGRA else { return nil }
         
-        // Bước 1: Trích xuất các điểm ảnh ứng viên thuộc vạch sân (màu trắng hoặc vàng)
-        // Downsample bước nhảy step = 6 để đạt tốc độ xử lý siêu tốc < 10ms
+        // Bước 1: Trích xuất các điểm ảnh ứng viên thuộc vạch sân
+        // Hỗ trợ:
+        // 1. Băng keo xanh dương (Blue tape) trên nền gạch men trắng (miễn nhiễm 100% với ron gạch)
+        // 2. Băng keo xanh lá (Green tape) trên nền sáng
+        // 3. Vạch sơn vàng (Yellow lines) trên sân gỗ
+        // 4. Vạch sơn trắng (White lines) trên thảm sân chuẩn BWF
         let step = 6
-        var candidatePoints: [CGPoint] = []
+        var blueTapePoints: [CGPoint] = []
+        var greenTapePoints: [CGPoint] = []
+        var yellowLinePoints: [CGPoint] = []
+        var whiteLinePoints: [CGPoint] = []
+        var totalScanned = 0
+        
         let bufferPtr = baseAddress.assumingMemoryBound(to: UInt8.self)
         
         let startY = height / 6
@@ -62,6 +71,7 @@ public class CourtLineDetector {
         for y in stride(from: startY, to: endY, by: step) {
             let rowOffset = y * bytesPerRow
             for x in stride(from: startX, to: endX, by: step) {
+                totalScanned += 1
                 let pixelOffset = rowOffset + x * 4
                 let b = Int(bufferPtr[pixelOffset])
                 let g = Int(bufferPtr[pixelOffset + 1])
@@ -71,20 +81,45 @@ public class CourtLineDetector {
                 let minC = min(r, min(g, b))
                 let diff = maxC - minC
                 let brightness = (r + g + b) / 3
+                let pt = CGPoint(x: x, y: y)
                 
-                // Vạch trắng: Độ sáng cao, độ bão hòa màu thấp (không phải mặt sân xanh lá/xanh lam)
-                let isWhiteLine = brightness > 135 && diff < 45
-                
-                // Vạch vàng (trên sân gỗ hoặc sân tối): R & G cao, B thấp hơn
-                let isYellowLine = r > 140 && g > 130 && b < 125 && (r + g) > 280
-                
-                if isWhiteLine || isYellowLine {
-                    candidatePoints.append(CGPoint(x: x, y: y))
+                // 1. BĂNG KEO XANH DƯƠNG: Sắc tố Blue vượt trội (B > R + 20 và B > G + 15)
+                // Hoàn toàn bỏ qua gạch men trắng (R≈G≈B) và ron gạch (R≈G≈B)
+                if b > r + 20 && b > g + 15 && b > 60 {
+                    blueTapePoints.append(pt)
+                }
+                // 2. BĂNG KEO XANH LÁ: Sắc tố Green vượt trội
+                else if g > r + 25 && g > b + 20 && g > 60 {
+                    greenTapePoints.append(pt)
+                }
+                // 3. VẠCH SƠN VÀNG: Sân gỗ thi đấu
+                else if r > 140 && g > 130 && b < 125 && (r + g) > 280 {
+                    yellowLinePoints.append(pt)
+                }
+                // 4. VẠCH TRẮNG TIÊU CHUẨN: Trên thảm tối màu
+                else if brightness > 135 && diff < 40 {
+                    whiteLinePoints.append(pt)
                 }
             }
         }
         
-        guard candidatePoints.count >= 60 else { return nil }
+        // Lựa chọn tập điểm ứng viên thông minh theo loại sân đang quan sát
+        var candidatePoints: [CGPoint] = []
+        if blueTapePoints.count >= 40 {
+            // Sân dán băng keo xanh dương (như sân gạch men trắng của bạn)
+            candidatePoints = blueTapePoints
+        } else if yellowLinePoints.count >= 40 {
+            // Sân gỗ thi đấu vạch vàng
+            candidatePoints = yellowLinePoints
+        } else if greenTapePoints.count >= 40 {
+            // Sân dán băng keo xanh lá
+            candidatePoints = greenTapePoints
+        } else if whiteLinePoints.count >= 50 && whiteLinePoints.count < Int(Double(totalScanned) * 0.35) {
+            // Vạch trắng trên thảm tối màu (Nếu > 35% thì là sàn nhà màu trắng, không phải vạch)
+            candidatePoints = whiteLinePoints
+        }
+        
+        guard candidatePoints.count >= 50 else { return nil }
         
         // Bước 2: Dùng RANSAC tìm đường thẳng thứ nhất (Line 1)
         guard let (line1, inliers1) = fitRansacLine(points: candidatePoints, iterations: 140, threshold: 6.0) else {
